@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>BBQ 进度表编辑器 - 最终增强版</title>
+    <style>
+        :root {
+            --primary: #2E0854;
+            --secondary: #7030A0;
+            --bg: #f4f7f9;
+            --accent: #2e8b57;
+        }
+
+        body {
+            font-family: 'Segoe UI', "Microsoft YaHei", sans-serif;
+            display: flex;
+            height: 100vh;
+            margin: 0;
+            background: var(--bg);
+            overflow: hidden;
+        }
+
+        /* --- 左侧编辑栏：550px --- */
+        .editor-side {
+            width: 550px; 
+            min-width: 550px;
+            background: #fff;
+            border-right: 1px solid #ddd;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+            z-index: 10;
+        }
+
+        .header { padding: 25px; border-bottom: 2px solid var(--primary); }
+        .header h1 { margin: 0 0 15px 0; font-size: 20px; color: var(--primary); }
+
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: block; font-weight: bold; font-size: 13px; color: var(--primary); margin-bottom: 6px; }
+
+        input[type="text"], input[type="date"], input[type="number"], select {
+            width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; box-sizing: border-box;
+        }
+
+        .timeline-input-wrapper { display: flex; align-items: center; gap: 12px; background: #f9f9f9; padding: 10px; border-radius: 8px; }
+
+        .main-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
+        .btn { cursor: pointer; border: none; border-radius: 6px; font-weight: bold; padding: 12px; font-size: 13px; }
+        .btn-add-sec { background: var(--primary); color: #fff; }
+        .btn-download { background: var(--accent); color: #fff; }
+
+        .scroll-area { flex-grow: 1; overflow-y: auto; padding: 20px; background: #f0f2f5; }
+
+        .section-card { margin-bottom: 15px; border-radius: 8px; background: #fff; border: 1px solid #ddd; overflow: hidden; }
+        .section-head { padding: 10px 15px; display: flex; align-items: center; background: var(--secondary); color: white; gap: 10px; }
+        .section-head input { background: rgba(255,255,255,0.2); border: none; color: white; font-weight: bold; padding: 5px 8px; border-radius: 4px; flex: 1; }
+
+        .item-box { margin: 10px; border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; }
+        .item-header { padding: 10px; display: flex; align-items: center; cursor: pointer; gap: 8px; background: #fafafa; }
+        .item-body { padding: 15px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid #eee; }
+
+        .form-row { display: flex; flex-direction: column; gap: 8px; }
+        .form-row label { font-size: 12px; color: #666; font-weight: bold; }
+
+        .color-palette { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 5px; }
+        .color-swatch { 
+            height: 25px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; transition: scale 0.1s; 
+        }
+        .color-swatch:hover { transform: scale(1.1); }
+        .color-swatch.active { border-color: #000; box-shadow: 0 0 5px rgba(0,0,0,0.2); }
+
+        .preview-side { flex-grow: 1; display: flex; flex-direction: column; background: #eef1f4; overflow: hidden; }
+        .chart-scroll-container { flex-grow: 1; overflow: auto; padding: 20px; }
+        #chart-wrapper { background: #fff; padding: 40px; border-radius: 4px; min-width: 1000px; display: inline-block; }
+    </style>
+</head>
+<body>
+
+    <div class="editor-side">
+        <div class="header">
+            <h1>BBQ 图表编辑器</h1>
+            <div class="control-group">
+                <label>📍 虚线参考日期 (点击年份可快速切换)</label>
+                <div class="timeline-input-wrapper">
+                    <input type="checkbox" id="enable-timeline" checked onchange="updateChart()">
+                    <input type="date" id="target-date" value="2026-02-15" onchange="updateChart()">
+                </div>
+            </div>
+            <div class="main-actions">
+                <button class="btn btn-add-sec" onclick="addSection()">+ 添加新板块</button>
+                <button class="btn btn-download" id="btn-download">下载高清 SVG</button>
+            </div>
+        </div>
+        
+        <div class="scroll-area" id="editor-container"></div>
+    </div>
+
+    <div class="preview-side">
+        <div class="chart-scroll-container">
+            <div id="chart-wrapper">
+                <div id="svg-render"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const PRESET_COLORS = [
+            '#D8B4FE', '#818CF8', '#60A5FA', '#34D399', '#FBBF24', '#F87171',
+            '#A78BFA', '#2E0854', '#1E40AF', '#065F46', '#B45309', '#991B1B'
+        ];
+
+        let sections = [
+            { 
+                title: "Clinical Trials", 
+                isCollapsed: false,
+                items: [
+                    { type: 'task', name: 'Phase I Study', start: '2026-01-01', duration: '3', durationUnit: 'month', color: '#818CF8', textPos: 'center', isExpanded: true, sameRow: false },
+                    { type: 'milestone', name: 'FPI', start: '2026-04-15', duration: '0', color: '#991B1B', textPos: 'right', isExpanded: false, sameRow: true }
+                ] 
+            }
+        ];
+
+        const CONFIG = {
+            leftLabelWidth: 160,
+            dayWidth: 4,
+            rowHeight: 45,
+            startMonth: "2025-11-01"
+        };
+
+        window.onload = () => renderSections();
+
+        function addSection() { sections.push({ title: "新板块", isCollapsed: false, items: [] }); renderSections(); }
+        
+        function addItem(sIdx, type) {
+            const d = document.getElementById('target-date').value;
+            sections[sIdx].items.push({
+                type: type, 
+                name: type === 'task' ? '新任务' : '里程碑', 
+                start: d, 
+                duration: type === 'task' ? '1' : '0', 
+                durationUnit: 'month',
+                color: PRESET_COLORS[0], 
+                textPos: 'center', 
+                sameRow: false, 
+                isExpanded: true
+            });
+            renderSections();
+        }
+
+        function renderSections() {
+            const container = document.getElementById('editor-container');
+            container.innerHTML = '';
+            
+            sections.forEach((sec, sIdx) => {
+                const card = document.createElement('div');
+                card.className = 'section-card';
+                card.innerHTML = `
+                    <div class="section-head">
+                        <span style="cursor:pointer" onclick="sections[${sIdx}].isCollapsed=!sections[${sIdx}].isCollapsed; renderSections()">${sec.isCollapsed ? '▶' : '▼'}</span>
+                        <input type="text" value="${sec.title}" oninput="sections[${sIdx}].title=this.value; updateChart()">
+                        <button onclick="sections.splice(${sIdx},1); renderSections()" style="color:white;border:none;background:none;cursor:pointer;">删除</button>
+                    </div>
+                    <div style="display: ${sec.isCollapsed ? 'none' : 'block'}">
+                        ${sec.items.map((item, iIdx) => `
+                            <div class="item-box">
+                                <div class="item-header" onclick="sections[${sIdx}].items[${iIdx}].isExpanded=!sections[${sIdx}].items[${iIdx}].isExpanded; renderSections()">
+                                    <span>${item.isExpanded ? '▼' : '▶'}</span>
+                                    <span style="flex:1; font-size:13px;">${item.name}</span>
+                                </div>
+                                ${item.isExpanded ? `
+                                    <div class="item-body">
+                                        <div class="form-row">
+                                            <label>名称</label>
+                                            <input type="text" value="${item.name}" oninput="sections[${sIdx}].items[${iIdx}].name=this.value; updateChart()">
+                                        </div>
+                                        
+                                        <div style="display:flex; gap:10px;">
+                                            <div class="form-row" style="flex:1">
+                                                <label>开始日期</label>
+                                                <input type="date" value="${item.start}" onchange="sections[${sIdx}].items[${iIdx}].start=this.value; updateChart()">
+                                            </div>
+                                            <div class="form-row" style="flex:1">
+                                                <label>文字位置 (围绕类型)</label>
+                                                <select onchange="sections[${sIdx}].items[${iIdx}].textPos=this.value; updateChart()">
+                                                    <option value="center" ${item.textPos==='center'?'selected':''}>居中 (条内)</option>
+                                                    <option value="left" ${item.textPos==='left'?'selected':''}>左侧 (条外)</option>
+                                                    <option value="right" ${item.textPos==='right'?'selected':''}>右侧 (条外)</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        ${item.type === 'task' ? `
+                                        <div style="display:flex; gap:10px;">
+                                            <div class="form-row" style="flex:1">
+                                                <label>时长</label>
+                                                <input type="number" value="${item.duration}" oninput="sections[${sIdx}].items[${iIdx}].duration=this.value; updateChart()">
+                                            </div>
+                                            <div class="form-row" style="flex:1">
+                                                <label>单位</label>
+                                                <select onchange="sections[${sIdx}].items[${iIdx}].durationUnit=this.value; updateChart()">
+                                                    <option value="day" ${item.durationUnit==='day'?'selected':''}>天</option>
+                                                    <option value="month" ${item.durationUnit==='month'?'selected':''}>月</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        ` : ''}
+
+                                        <div class="form-row">
+                                            <label>颜色</label>
+                                            <div class="color-palette">
+                                                ${PRESET_COLORS.map(c => `
+                                                    <div class="color-swatch ${item.color === c ? 'active' : ''}" 
+                                                         style="background:${c}" 
+                                                         onclick="sections[${sIdx}].items[${iIdx}].color='${c}'; renderSections(); updateChart()">
+                                                    </div>
+                                                `).join('')}
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <label style="width:auto; cursor:pointer; color: var(--secondary); display:flex; align-items:center; gap:8px;">
+                                                <input type="checkbox" ${item.sameRow ? 'checked' : ''} onchange="sections[${sIdx}].items[${iIdx}].sameRow=this.checked; updateChart()">
+                                                与上一项同行排列
+                                            </label>
+                                        </div>
+                                        <button class="btn" style="padding:5px; background:none; border:1px solid #ddd; color:#999; font-size:11px;" onclick="sections[${sIdx}].items.splice(${iIdx},1); renderSections()">删除项目</button>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `).join('')}
+                        <div style="padding:10px; display:flex; gap:10px;">
+                            <button class="btn" style="flex:1; background:#eee;" onclick="addItem(${sIdx}, 'task')">+ 事项</button>
+                            <button class="btn" style="flex:1; background:#eee;" onclick="addItem(${sIdx}, 'milestone')">+ 里程碑</button>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+            updateChart();
+        }
+
+        function getX(dateStr) {
+            const d1 = new Date(CONFIG.startMonth);
+            const d2 = new Date(dateStr);
+            const days = (d2 - d1) / (1000 * 60 * 60 * 24);
+            return CONFIG.leftLabelWidth + (days * CONFIG.dayWidth);
+        }
+
+        function updateChart() {
+            const target = document.getElementById('svg-render');
+            let totalHeight = 80; 
+            sections.forEach(sec => {
+                totalHeight += 40; 
+                sec.items.forEach((item, idx) => {
+                    if (!item.sameRow || idx === 0) totalHeight += CONFIG.rowHeight;
+                });
+            });
+            const totalWidth = CONFIG.leftLabelWidth + (365 * 2.5 * CONFIG.dayWidth); 
+
+            let html = `<svg width="${totalWidth}" height="${totalHeight}" viewBox="0 0 ${totalWidth} ${totalHeight}" xmlns="http://www.w3.org/2000/svg" style="background:#fff;">`;
+            
+            // 时间网格
+            for(let i=0; i<30; i++) {
+                let d = new Date(CONFIG.startMonth); d.setMonth(d.getMonth() + i);
+                let x = getX(d.toISOString().split('T')[0]);
+                html += `<line x1="${x}" y1="0" x2="${x}" y2="${totalHeight}" stroke="#f0f0f0" stroke-width="1"/>`;
+                html += `<text x="${x+5}" y="30" font-size="12" fill="#bbb">${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2, '0')}</text>`;
+            }
+
+            let curY = 50;
+            sections.forEach(sec => {
+                html += `<rect x="0" y="${curY}" width="${CONFIG.leftLabelWidth}" height="32" fill="#2E0854" fill-opacity="0.1" rx="4"/>`;
+                html += `<text x="15" y="${curY+21}" font-size="14" font-weight="bold" fill="#2E0854">${sec.title}</text>`;
+                curY += 35;
+
+                sec.items.forEach((item, idx) => {
+                    if (!item.sameRow || idx === 0) {
+                        curY += CONFIG.rowHeight;
+                        html += `<line x1="${CONFIG.leftLabelWidth}" y1="${curY}" x2="${totalWidth}" y2="${curY}" stroke="#f9f9f9" stroke-width="1"/>`;
+                    }
+
+                    const x1 = getX(item.start);
+                    const yPos = curY - (CONFIG.rowHeight / 2); 
+
+                    if(item.type === 'task') {
+                        let w;
+                        if (item.durationUnit === 'month') {
+                            const startDate = new Date(item.start);
+                            const endDate = new Date(item.start);
+                            endDate.setMonth(startDate.getMonth() + parseInt(item.duration || 0));
+                            const diffDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                            w = diffDays * CONFIG.dayWidth;
+                        } else {
+                            w = parseInt(item.duration || 0) * CONFIG.dayWidth;
+                        }
+                        
+                        w = Math.max(10, w);
+                        html += `<rect x="${x1}" y="${yPos - 12}" width="${w}" height="24" fill="${item.color}" rx="12"/>`;
+                        
+                        let tx, tAnchor, tColor;
+                        if(item.textPos === 'center') { tx = x1 + w/2; tAnchor = 'middle'; tColor = '#fff'; }
+                        else if(item.textPos === 'left') { tx = x1 - 10; tAnchor = 'end'; tColor = '#333'; }
+                        else { tx = x1 + w + 10; tAnchor = 'start'; tColor = '#333'; }
+                        html += `<text x="${tx}" y="${yPos + 5}" font-size="12" text-anchor="${tAnchor}" fill="${tColor}">${item.name}</text>`;
+                    } else {
+                        // 里程碑逻辑
+                        html += `<rect x="${x1-10}" y="${yPos-10}" width="20" height="20" fill="${item.color}" transform="rotate(45 ${x1} ${yPos})"/>`;
+                        let tx, tAnchor;
+                        if(item.textPos === 'left') { tx = x1 - 15; tAnchor = 'end'; }
+                        else { tx = x1 + 15; tAnchor = 'start'; } // 里程碑默认右侧或左侧，center 自动转为 right
+                        html += `<text x="${tx}" y="${yPos + 5}" font-size="12" text-anchor="${tAnchor}" fill="${item.color}" font-weight="bold">${item.name}</text>`;
+                    }
+                });
+            });
+
+            if(document.getElementById('enable-timeline').checked) {
+                const nowX = getX(document.getElementById('target-date').value);
+                html += `<line x1="${nowX}" y1="30" x2="${nowX}" y2="${totalHeight}" stroke="#7030A0" stroke-width="2" stroke-dasharray="5,3"/>`;
+                html += `<circle cx="${nowX}" cy="35" r="4" fill="#7030A0"/>`;
+            }
+
+            html += `</svg>`;
+            target.innerHTML = html;
+        }
+
+        document.getElementById('btn-download').onclick = () => {
+            const svgElement = document.querySelector('#svg-render svg');
+            const serializer = new XMLSerializer();
+            const source = '<?xml version="1.0" standalone="no"?>\r\n' + serializer.serializeToString(svgElement);
+            const link = document.createElement("a");
+            link.href = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
+            link.download = `BBQ_Gantt_Chart_Pro.svg`;
+            link.click();
+        };
+    </script>
+</body>
+</html>
